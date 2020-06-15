@@ -10,6 +10,7 @@ import time,hashlib
 import traceback,json
 from django.conf import settings
 from app_doc.util_upload_img import upload_generation_dir,base_img_upload
+from loguru import logger
 
 # MrDoc 基于用户的Token访问API模块
 
@@ -22,6 +23,10 @@ def manage_token(request):
             token = UserToken.objects.get(user=request.user).token # 查询用户Token
         except ObjectDoesNotExist:
             token = '你还没有生成过Token！'
+        except:
+            if settings.DEBUG:
+                print(traceback.print_exc())
+                logger.exception("Token管理页面异常")
         return render(request,'app_api/manage_token.html',locals())
     elif request.method == 'POST':
         try:
@@ -38,8 +43,7 @@ def manage_token(request):
             )
             return JsonResponse({'status':True,'data':token_str})
         except:
-            if settings.DEBUG:
-                print(traceback.print_exc())
+            logger.exception("用户Token生成异常")
             return JsonResponse({'status':False,'data':'生成出错，请重试！'})
 
 
@@ -61,6 +65,9 @@ def get_projects(request):
         return JsonResponse({'status':True,'data':project_list})
     except ObjectDoesNotExist:
         return JsonResponse({'status':False,'data':'token无效'})
+    except:
+        logger.exception("token获取文集异常")
+        return JsonResponse({'status':False,'data':'系统异常'})
 
 
 # 新建文档
@@ -89,7 +96,9 @@ def create_doc(request):
             return JsonResponse({'status':False,'data':'非法请求'})
     except ObjectDoesNotExist:
         return JsonResponse({'status': False, 'data': 'token无效'})
-
+    except:
+        logger.exception("token创建文档异常")
+        return JsonResponse({'status':False,'data':'系统异常'})
 
 # 上传图片
 @csrf_exempt
@@ -111,6 +120,5 @@ def upload_img(request):
     except ObjectDoesNotExist:
         return JsonResponse({'success': 0, 'data': 'token无效'})
     except:
-        if settings.DEBUG:
-            print(traceback.print_exc())
+        logger.exception("token上传图片异常")
         return JsonResponse({'success':0,'data':'上传出错'})

@@ -169,6 +169,7 @@
         flowChart            : false,          // flowChart.js only support IE9+
         sequenceDiagram      : false,          // sequenceDiagram.js only support IE9+
         mindMap              : true,           // 脑图
+        echart               : true,           // echart 图表
         previewCodeHighlight : true,
                 
         toolbar              : true,           // show/hide toolbar
@@ -506,7 +507,7 @@
                     
                     return ;
                 }
-
+                // 加载流程图和序列图 JS 文件
                 if (settings.flowChart || settings.sequenceDiagram) 
                 {
                     editormd.loadScript(loadPath + "raphael.min", function() {
@@ -546,6 +547,10 @@
                     _this.loadedDisplay();
                 }
             }; 
+            // 加载 echarts.min.js
+            editormd.loadScript(loadPath + "echarts.min", function() {
+                // _this.loadedDisplay();
+            });
 
             editormd.loadCSS(loadPath + "codemirror/codemirror.min");
             
@@ -1072,12 +1077,14 @@
                     return false;
                 }
 
-                if (top - editor.offset().top > 10 && top < editor.height())
+                // if (top - editor.offset().top > 10 && top < editor.height())
+                if (top - editor.offset().top > 10 && top - editor.offset().top < editor.height() - toolbar.height())
                 {
                     toolbar.css({
                         position : "fixed",
                         width    : editor.width() + "px",
-                        left     : ($window.width() - editor.width()) / 2 + "px"
+                        // left     : ($window.width() - editor.width()) / 2 + "px"
+                        left     : editor.offset().left + "px"
                     });
                 }
                 else
@@ -1519,7 +1526,26 @@
                 var mmap  = $(this);
                 var md_data = window.markmap.transform(mmap.text().trim());
                 window.markmap.markmap("svg#"+this.id,md_data)
-                //drawMindMap(mmap[0]) // kityminder的实现
+            });   
+
+            return this;
+        },
+
+        /**
+         * 解析和渲染 Echarts - 2020-05-21
+         * 
+         * @returns {editormd}             返回editormd的实例对象
+         */
+        echartRender:function(){
+            // console.log("开始解析echart")
+            this.previewContainer.find(".echart").each(function(){
+                var echart  = $(this);
+                if(echart.text() != ''){
+                    var echart_data = eval("(" + echart.text() + ")");
+                    echart.empty();
+                    var myChart = echarts.init(document.getElementById(this.id),null,{renderer: 'svg'});
+                    myChart.setOption(echart_data);
+                }
             });   
 
             return this;
@@ -2018,6 +2044,7 @@
                 flowChart            : settings.flowChart,
                 sequenceDiagram      : settings.sequenceDiagram,
                 mindMap              : settings.mindMap,
+                echart               : settings.echart,
                 previewCodeHighlight : settings.previewCodeHighlight,
             };
             
@@ -2104,6 +2131,14 @@
                     setTimeout(function(){
                         _this.mindmapRender();
                     },10)
+                   
+                }
+
+                // 渲染 echart
+                if(settings.echart){
+                    setTimeout(function(){
+                        _this.echartRender();
+                    },10)                    
                    
                 }
                 
@@ -3383,7 +3418,8 @@
         atLink        : /@(\w+)/g,
         email         : /(\w+)@(\w+)\.(\w+)\.?(\w+)?/g,
         emailLink     : /(mailto:)?([\w\.\_]+)@(\w+)\.(\w+)\.?(\w+)?/g,
-        emoji         : /:([\w\+-]+):/g,
+        //emoji         : /:([\w\+-]+):/g,
+        emoji         : /:([A-Za-z\+-]+):/g,
         emojiDatetime : /(\d{2}:\d{2}:\d{2})/g,
         twemoji       : /:(tw-([\w]+)-?(\w+)?):/g,
         fontAwesome   : /:(fa-([\w]+)(-(\w+)){0,}):/g,
@@ -3442,6 +3478,7 @@
         var editormdLogoReg = regexs.editormdLogo;
         var pageBreakReg    = regexs.pageBreak;
 
+        // marked emoji 解析
         markedRenderer.emoji = function(text) {
             
             text = text.replace(editormd.regexs.emojiDatetime, function($1) {           
@@ -3509,6 +3546,7 @@
             return text;
         };
 
+        // marked @ 解析
         markedRenderer.atLink = function(text) {
 
             if (atLinkReg.test(text))
@@ -3536,7 +3574,7 @@
 
             return text;
         };
-                
+        // marked 链接解析
         markedRenderer.link = function (href, title, text) {
 
             if (this.options.sanitize) {
@@ -3572,6 +3610,7 @@
             return out;
         };
         
+        // marked 解析标题
         markedRenderer.heading = function(text, level, raw) {
                     
             var linkText       = text;
@@ -3607,7 +3646,8 @@
             
             var headingHTML = "<h" + level + " id=\"h"+ level + "-" + this.options.headerPrefix + id +"\">";
             
-            headingHTML    += "<a name=\"" + text + "\" class=\"reference-link\"></a>";
+            // headingHTML    += "<a name=\"" + text + "\" class=\"reference-link\"></a>";
+            headingHTML    += "<a name=\"" + text.replace(/<[^>]*>\s?/g,'') + "\" class=\"reference-link\"></a>";
             headingHTML    += "<span class=\"header-link octicon octicon-link\"></span>";
             headingHTML    += (hasLinkReg) ? this.atLink(this.emoji(linkText)) : this.atLink(this.emoji(text));
             headingHTML    += "</h" + level + ">";
@@ -3615,6 +3655,7 @@
             return headingHTML;
         };
         
+        // marked 解析分页符
         markedRenderer.pageBreak = function(text) {
             if (pageBreakReg.test(text) && settings.pageBreak)
             {
@@ -3623,7 +3664,7 @@
             
             return text;
         };
-
+        // marked 解析段落
         markedRenderer.paragraph = function(text) {
             var isTeXInline     = /\$\$(.*)\$\$/g.test(text);
             var isTeXLine       = /^\$\$(.*)\$\$$/.test(text);
@@ -3647,7 +3688,7 @@
             return (isToC) ? ( (isToCMenu) ? "<div class=\"editormd-toc-menu\">" + tocHTML + "</div><br/>" : tocHTML )
                            : ( (pageBreakReg.test(text)) ? this.pageBreak(text) : "<p" + isTeXAddClass + ">" + this.atLink(this.emoji(text)) + "</p>\n" );
         };
-
+        // marked 解析代码块
         markedRenderer.code = function (code, lang, escaped) { 
 
             if (lang === "seq" || lang === "sequence")
@@ -3662,7 +3703,7 @@
             {
                 return "<p class=\"" + editormd.classNames.tex + "\">" + code + "</p>";
             }
-            else if (/^mindmap/i.test(lang)){
+            else if (/^mindmap/i.test(lang)){ // 思维导图
             　　var len = 9 || 32;
             　　var $chars = 'ABCDEFGHJKMNPQRSTWXYZabcdefhijkmnprstwxyz2345678'; 
             　　var maxPos = $chars.length;
@@ -3672,21 +3713,49 @@
                 }
                 // var map_id = lang.split('>')[1];
                 // console.log(map_id)
-                return "<svg class='mindmap' style='width:100%;min-height=150px;' id='mindmap-"+ map_id +"'>"+code+"</svg>";
+                var custom_height;
+                var h = lang.split('>')[1];
+                if(h != undefined){
+                    custom_height = h;
+                }else{
+                    custom_height = 150;
+                }
+
+                return "<svg class='mindmap' style='width:100%;min-height:150px;height:"+ custom_height +"px;' id='mindmap-"+ map_id +"'>"+code+"</svg>";
+            }
+            else if(/^echart/i.test(lang)){ // echart 图表
+                var len = 9 || 32;
+            　　var $chars = 'ABCDEFGHJKMNPQRSTWXYZabcdefhijkmnprstwxyz2345678'; 
+            　　var maxPos = $chars.length;
+            　　var map_id = '';
+            　　for (var i = 0; i < len; i++) {
+            　　　　map_id += $chars.charAt(Math.floor(Math.random() * maxPos));
+                }
+                // var map_id = lang.split('>')[1];
+                // console.log(map_id)
+                var custom_height;
+                var h = lang.split('>')[1];
+                if(h != undefined){
+                    custom_height = h;
+                }else{
+                    custom_height = 150;
+                }
+
+                return "<div class='echart' style='width:100%;min-height:350px;height:"+ custom_height +"px;' id='echart-"+ map_id +"'>"+code+"</div>";
             } 
             else 
             {
                 return marked.Renderer.prototype.code.apply(this, arguments);
             }
         };
-
+        // marked 解析表格
         markedRenderer.tablecell = function(content, flags) {
             var type = (flags.header) ? "th" : "td";
             var tag  = (flags.align)  ? "<" + type +" style=\"text-align:" + flags.align + "\">" : "<" + type + ">";
             
             return tag + this.atLink(this.emoji(content)) + "</" + type + ">\n";
         };
-
+        // marked 解析列表项
         markedRenderer.listitem = function(text) {
             if (settings.taskList && /^\s*\[[x\s]\]\s*/.test(text)) 
             {
@@ -3850,16 +3919,24 @@
     editormd.filterHTMLTags = function(html, filters) {
         
         if (typeof html !== "string") {
-            html = new String(html);
+            html = new String(html).toString();
         }
             
         if (typeof filters !== "string") {
-            return html;
+            //return html;
+            // If no filters set use "script|on*" by default to avoid XSS
+            filters = "script|on*";
         }
 
         var expression = filters.split("|");
         var filterTags = expression[0].split(",");
         var attrs      = expression[1];
+
+        if(!filterTags.includes('allowScript') && !filterTags.includes('script'))
+         {
+             // Only allow script if requested specifically
+             filterTags.push('script');
+         }
 
         for (var i = 0, len = filterTags.length; i < len; i++)
         {
@@ -3870,9 +3947,24 @@
         
         //return html;
 
+        if (typeof attrs === "undefined")
+         {
+            // If no attrs set block "on*" to avoid XSS
+            attrs = "on*"
+         }
+
         if (typeof attrs !== "undefined")
         {
             var htmlTagRegex = /\<(\w+)\s*([^\>]*)\>([^\>]*)\<\/(\w+)\>/ig;
+
+            var filterAttrs = attrs.split(",");
+            var filterOn = true;
+
+            if(filterAttrs.includes('allowOn'))
+            {
+                // Only allow on* if requested specifically
+                filterOn = false;
+            }
 
             if (attrs === "*")
             {
@@ -3880,7 +3972,8 @@
                     return "<" + $2 + ">" + $4 + "</" + $5 + ">";
                 });         
             }
-            else if (attrs === "on*")
+            // else if (attrs === "on*")
+            else if ((attrs === "on*") || filterOn)
             {
                 html = html.replace(htmlTagRegex, function($1, $2, $3, $4, $5) {
                     var el = $("<" + $2 + ">" + $4 + "</" + $5 + ">");
@@ -3904,10 +3997,11 @@
                     return el[0].outerHTML + text;
                 });
             }
-            else
+            // else
+            if(filterAttrs.length > 1 || (filterAttrs[0]!=="*" && filterAttrs[0]!=="on*"))
             {
                 html = html.replace(htmlTagRegex, function($1, $2, $3, $4) {
-                    var filterAttrs = attrs.split(",");
+                    // var filterAttrs = attrs.split(",");
                     var el = $($1);
                     el.html($4);
 
@@ -3932,8 +4026,8 @@
      * @returns {Object}   div           返回jQuery对象元素
      */
     
-    editormd.markdownToHTML = function(id, options) {
-        var defaults = {
+    editormd.markdownToHTML = function(id, options) { // Markdown 渲染为 HTML
+        var defaults = { // 默认属性
             gfm                  : true,
             toc                  : true,
             tocm                 : false,
@@ -3952,17 +4046,19 @@
             taskList             : false,   // Github Flavored Markdown task lists
             emoji                : false,
             flowChart            : false,
-            mindMap              : true, //百度脑图
+            mindMap              : true, //脑图
+            echart               : true, 
             sequenceDiagram      : false,
             previewCodeHighlight : true
         };
         
-        editormd.$marked  = marked;
+        editormd.$marked  = marked; // 定义 editormd 的 marked 属性 为 marked
 
-        var div           = $("#" + id);
+        var div           = $("#" + id); // Markdown 内容所在的 div
         var settings      = div.settings = $.extend(true, defaults, options || {});
-        var saveTo        = div.find("textarea");
+        var saveTo        = div.find("textarea"); // HTML 保存的 DIV
         
+        // 如果页面没有保存 HTML 的div，则自动添加一个
         if (saveTo.length < 1)
         {
             div.append("<textarea></textarea>");
@@ -3972,34 +4068,35 @@
         var markdownDoc   = (settings.markdown === "") ? saveTo.val() : settings.markdown; 
         var markdownToC   = [];
 
-        var rendererOptions = {  
-            toc                  : settings.toc,
-            tocm                 : settings.tocm,
-            tocStartLevel        : settings.tocStartLevel,
-            taskList             : settings.taskList,
-            emoji                : settings.emoji,
-            tex                  : settings.tex,
-            pageBreak            : settings.pageBreak,
+        var rendererOptions = {  // 渲染选项
+            toc                  : settings.toc, // 目录
+            tocm                 : settings.tocm, // 目录
+            tocStartLevel        : settings.tocStartLevel, // 目录开始级别
+            taskList             : settings.taskList, // 人物列表
+            emoji                : settings.emoji, // emoji 表情
+            tex                  : settings.tex, // 公式
+            pageBreak            : settings.pageBreak, // 分页符
             atLink               : settings.atLink,           // for @link
             emailLink            : settings.emailLink,        // for mail address auto link
-            flowChart            : settings.flowChart,
-            sequenceDiagram      : settings.sequenceDiagram,
+            flowChart            : settings.flowChart, // 流程图
+            sequenceDiagram      : settings.sequenceDiagram, // 序列图
             mindMap              : settings.mindMap, // 思维导图
-            previewCodeHighlight : settings.previewCodeHighlight,
+            echart              : settings.echart, // 思维导图
+            previewCodeHighlight : settings.previewCodeHighlight, // 预览代码高度
         };
 
-        var markedOptions = {
-            renderer    : editormd.markedRenderer(markdownToC, rendererOptions),
-            gfm         : settings.gfm,
-            tables      : true,
-            breaks      : true,
+        var markedOptions = { // marked 选项
+            renderer    : editormd.markedRenderer(markdownToC, rendererOptions), // 渲染器
+            gfm         : settings.gfm, // 风格
+            tables      : true, // 表格
+            breaks      : true, // 
             pedantic    : false,
             sanitize    : (settings.htmlDecode) ? false : true, // 是否忽略HTML标签，即是否开启HTML标签解析，为了安全性，默认不开启
             smartLists  : true,
             smartypants : true
         };
         
-		markdownDoc = new String(markdownDoc);
+		markdownDoc = new String(markdownDoc).toString();
         
         var markdownParsed = marked(markdownDoc, markedOptions);
         
@@ -4083,10 +4180,28 @@
                     var mmap  = $(this);
                     var md_data = window.markmap.transform(mmap.text().trim());
                     window.markmap.markmap("svg#"+this.id,md_data)
-                    //drawMindMap(mmap[0]) // kityminder的实现
                 });   
-            }
+            };
             mindmapHandle();
+        }
+
+        // 前台渲染 Echart
+        if(settings.echart){
+            // console.log("前台解析echart")
+            var echartHandle = function(){
+                div.find(".echart").each(function(){
+                    var echart  = $(this);
+                    if(echart.text() != ''){
+                        var echart_data = eval("(" + echart.text() + ")");
+                        echart.empty();
+                        var myChart = echarts.init(document.getElementById(this.id),null,{renderer: 'svg'});
+                        myChart.setOption(echart_data);
+                    }
+                });
+            };
+            echartHandle();
+            
+
         }
         
         div.getMarkdown = function() {            
@@ -4254,7 +4369,17 @@
             editormd.loadScript(editormd.katexURL.js, callback || function(){});
         });
     };
-        
+    
+    /**
+     * 加载Echarts文件
+     * 
+     * @param {Function} [callback=function()]  加载成功后执行的回调函数
+     */
+    
+    editormd.loadEcharts = function (callback) {
+        editormd.loadScript("/static/editor.md/lib/katex.min", callback || function(){});
+    };
+
     /**
      * 锁屏
      * lock screen

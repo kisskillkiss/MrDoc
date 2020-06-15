@@ -9,6 +9,8 @@ from django.core.exceptions import PermissionDenied,ObjectDoesNotExist
 from app_doc.models import Project,Doc,DocTemp
 from django.contrib.auth.models import User
 from django.db.models import Q
+from django.db import transaction
+from loguru import logger
 import datetime
 import traceback
 import re
@@ -18,11 +20,12 @@ import os.path
 
 # 替换前端传来的非法字符
 def validateTitle(title):
-  rstr = r"[\/\\\:\*\?\"\<\>\|]" # '/ \ : * ? " < > |'
+  rstr = r"[\/\\\:\*\?\"\<\>\|\[\]]" # '/ \ : * ? " < > |'
   new_title = re.sub(rstr, "_", title) # 替换为下划线
   return new_title
 
-
+# 文集列表（首页）
+@logger.catch()
 def project_list(request):
     kw = request.GET.get('kw','') # 搜索词
     sort = request.GET.get('sort',0) # 排序,0表示按时间升序排序，1表示按时间降序排序，默认为0
@@ -171,31 +174,29 @@ def project_list(request):
 
 # 创建文集
 @login_required()
+@require_http_methods(['POST'])
 def create_project(request):
-    if request.method == 'POST':
-        try:
-            name = request.POST.get('pname','')
-            name = validateTitle(name)
-            desc = request.POST.get('desc','')
-            role = request.POST.get('role',0)
-            role_list = ['0','1','2','3',0,1,2,3]
-            if name != '':
-                project = Project.objects.create(
-                    name=name,
-                    intro=desc[:100],
-                    create_user=request.user,
-                    role = int(role) if role in role_list else 0
-                )
-                project.save()
-                return JsonResponse({'status':True,'data':{'id':project.id,'name':project.name}})
-            else:
-                return JsonResponse({'status':False,'data':'文集名称不能为空！'})
-        except Exception as e:
-            if settings.DEBUG:
-                print(traceback.print_exc())
-            return JsonResponse({'status':False,'data':'出现异常,请检查输入值！'})
-    else:
-        return JsonResponse({'status':False,'data':'请求方法不允许'})
+    try:
+        name = request.POST.get('pname','')
+        name = validateTitle(name)
+        desc = request.POST.get('desc','')
+        role = request.POST.get('role',0)
+        role_list = ['0','1','2','3',0,1,2,3]
+        if name != '':
+            project = Project.objects.create(
+                name=validateTitle(name),
+                intro=desc[:100],
+                create_user=request.user,
+                role = int(role) if role in role_list else 0
+            )
+            project.save()
+            return JsonResponse({'status':True,'data':{'id':project.id,'name':project.name}})
+        else:
+            return JsonResponse({'status':False,'data':'文集名称不能为空！'})
+    except Exception as e:
+
+        logger.exception("创建文集出错")
+        return JsonResponse({'status':False,'data':'出现异常,请检查输入值！'})
 
 
 # 文集页
@@ -212,11 +213,11 @@ def project_index(request,pro_id):
         else:
             colla_user = 0
 
-        # 获取问价文集前台下载权限
+        # 获取文集前台下载权限
         try:
-            allow_epub_download = ProjectReport.objects.get(project=project).allow_epub
+            allow_download = ProjectReport.objects.get(project=project)
         except ObjectDoesNotExist:
-            allow_epub_download = 0
+            allow_download = False
 
         # 私密文集并且访问者非创建者非协作者
         if (project.role == 1) and (request.user != project.create_user) and (colla_user == 0):
@@ -250,38 +251,36 @@ def project_index(request,pro_id):
             return render(request,'app_doc/project_doc_search.html',locals())
         return render(request, 'app_doc/project.html', locals())
     except Exception as e:
-        if settings.DEBUG:
-            print(traceback.print_exc())
+        logger.exception("文集页访问异常")
         return render(request,'404.html')
 
 
 # 修改文集
 @login_required()
+@require_http_methods(['POST'])
 def modify_project(request):
-    if request.method == 'POST':
-        try:
-            pro_id = request.POST.get('pro_id',None)
-            project = Project.objects.get(id=pro_id)
-            # 验证用户有权限修改文集
-            if (request.user == project.create_user) or request.user.is_superuser:
-                name = request.POST.get('name',None)
-                content = request.POST.get('desc',None)
-                project.name = name
-                project.intro = content
-                project.save()
-                return JsonResponse({'status':True,'data':'修改成功'})
-            else:
-                return JsonResponse({'status':False,'data':'非法请求'})
-        except Exception as e:
-            if settings.DEBUG:
-                print(traceback.print_exc())
-            return JsonResponse({'status':False,'data':'请求出错'})
-    else:
-        return JsonResponse({'status':False,'data':'方法不允许'})
+    try:
+        pro_id = request.POST.get('pro_id',None)
+        project = Project.objects.get(id=pro_id)
+        # 验证用户有权限修改文集
+        if (request.user == project.create_user) or request.user.is_superuser:
+            name = request.POST.get('name',None)
+            content = request.POST.get('desc',None)
+            project.name = validateTitle(name)
+            project.intro = content
+            project.save()
+            return JsonResponse({'status':True,'data':'修改成功'})
+        else:
+            return JsonResponse({'status':False,'data':'非法请求'})
+    except Exception as e:
+        logger.exception("修改文集出错")
+        return JsonResponse({'status':False,'data':'请求出错'})
 
 
 # 修改文集权限
 @login_required()
+@require_http_methods(['GET',"POST"])
+@logger.catch()
 def modify_project_role(request,pro_id):
     try:
         pro = Project.objects.get(id=pro_id)
@@ -340,13 +339,13 @@ def check_viewcode(request):
                 errormsg = "访问码错误"
                 return render(request, 'app_doc/check_viewcode.html', locals())
     except Exception as e:
-        if settings.DEBUG:
-            print(traceback.print_exc())
+        logger.exception("验证文集访问码出错")
         return render(request,'404.html')
 
 
 # 删除文集
 @login_required()
+@require_http_methods(["POST"])
 def del_project(request):
     try:
         pro_id = request.POST.get('pro_id','')
@@ -364,49 +363,47 @@ def del_project(request):
         else:
             return JsonResponse({'status':False,'data':'参数错误'})
     except Exception as e:
-        if settings.DEBUG:
-            print(traceback.print_exc())
+        logger.exception("删除文集出错")
         return JsonResponse({'status':False,'data':'请求出错'})
 
 
 # 管理文集
 @login_required()
+@require_http_methods(['GET'])
 def manage_project(request):
-    if request.method == 'GET':
-        try:
-            search_kw = request.GET.get('kw', None)
-            if search_kw:
-                pro_list = Project.objects.filter(create_user=request.user,intro__icontains=search_kw).order_by('-create_time')
-                paginator = Paginator(pro_list, 15)
-                page = request.GET.get('page', 1)
-                try:
-                    pros = paginator.page(page)
-                except PageNotAnInteger:
-                    pros = paginator.page(1)
-                except EmptyPage:
-                    pros = paginator.page(paginator.num_pages)
-                pros.kw = search_kw
-            else:
-                pro_list = Project.objects.filter(create_user=request.user).order_by('-create_time')
-                paginator = Paginator(pro_list, 15)
-                page = request.GET.get('page', 1)
-                try:
-                    pros = paginator.page(page)
-                except PageNotAnInteger:
-                    pros = paginator.page(1)
-                except EmptyPage:
-                    pros = paginator.page(paginator.num_pages)
-            return render(request,'app_doc/manage_project.html',locals())
-        except Exception as e:
-            if settings.DEBUG:
-                print(traceback.print_exc())
-            return render(request,'404.html')
-    else:
-        return HttpResponse('方法不允许')
+    try:
+        search_kw = request.GET.get('kw', None)
+        if search_kw:
+            pro_list = Project.objects.filter(create_user=request.user,intro__icontains=search_kw).order_by('-create_time')
+            paginator = Paginator(pro_list, 15)
+            page = request.GET.get('page', 1)
+            try:
+                pros = paginator.page(page)
+            except PageNotAnInteger:
+                pros = paginator.page(1)
+            except EmptyPage:
+                pros = paginator.page(paginator.num_pages)
+            pros.kw = search_kw
+        else:
+            pro_list = Project.objects.filter(create_user=request.user).order_by('-create_time')
+            paginator = Paginator(pro_list, 15)
+            page = request.GET.get('page', 1)
+            try:
+                pros = paginator.page(page)
+            except PageNotAnInteger:
+                pros = paginator.page(1)
+            except EmptyPage:
+                pros = paginator.page(paginator.num_pages)
+        return render(request,'app_doc/manage_project.html',locals())
+    except Exception as e:
+        logger.exception("管理文集出错")
+        return render(request,'404.html')
 
 
 # 修改文集前台下载权限
 @login_required()
+@require_http_methods(['GET',"POST"])
+@logger.catch()
 def modify_project_download(request,pro_id):
     try:
         pro = Project.objects.get(id=pro_id)
@@ -415,23 +412,37 @@ def modify_project_download(request,pro_id):
     if (pro.create_user != request.user) and (request.user.is_superuser is False):
         return render(request,'403.html')
     else:
+        project_files = ProjectReportFile.objects.filter(project=pro)
         if request.method == 'GET':
             return render(request,'app_doc/manage_project_download.html',locals())
         elif request.method == 'POST':
             download_epub = request.POST.get('download_epub',None)
+            download_pdf = request.POST.get('download_pdf', None)
             # print("epub状态:",download_epub)
+            # EPUB下载权限
             if download_epub == 'on':
                 epub_status = 1
             else:
                 epub_status = 0
+            # PDF下载权限
+            if download_pdf == 'on':
+                pdf_status = 1
+            else:
+                pdf_status = 0
+            # 写入数据库
             ProjectReport.objects.update_or_create(
                 project = pro,defaults={'allow_epub':epub_status}
+            )
+            ProjectReport.objects.update_or_create(
+                project=pro, defaults={'allow_pdf': pdf_status}
             )
             return render(request,'app_doc/manage_project_download.html',locals())
 
 
 # 文集协作管理
 @login_required()
+@require_http_methods(['GET',"POST"])
+@logger.catch()
 def manage_project_collaborator(request,pro_id):
     project = Project.objects.filter(id=pro_id, create_user=request.user)
     if project.exists() is False:
@@ -477,8 +488,7 @@ def manage_project_collaborator(request,pro_id):
                 pro_colla.delete()
                 return JsonResponse({'status':True,'data':'删除成功'})
             except:
-                if settings.DEBUG:
-                    print(traceback.print_exc())
+                logger.exception("删除协作者出错")
                 return JsonResponse({'status':False,'data':'删除出错'})
         # 修改协作权限
         elif int(types) == 2:
@@ -490,8 +500,7 @@ def manage_project_collaborator(request,pro_id):
                 pro_colla.update(role=role)
                 return JsonResponse({'status':True,'data':'修改成功'})
             except:
-                if settings.DEBUG:
-                    print(traceback.print_exc())
+                logger.exception("修改协作权限出错")
                 return JsonResponse({'status':False,'data':'修改失败'})
 
         else:
@@ -500,12 +509,13 @@ def manage_project_collaborator(request,pro_id):
 
 # 我协作的文集
 @login_required()
+@logger.catch()
 def manage_pro_colla_self(request):
     colla_pros = ProjectCollaborator.objects.filter(user=request.user)
     return render(request,'app_doc/manage_project_self_colla.html',locals())
 
 
-# 文档浏览页页
+# 文档浏览页
 @require_http_methods(['GET'])
 def doc(request,pro_id,doc_id):
     try:
@@ -526,7 +536,6 @@ def doc(request,pro_id,doc_id):
             # 私密文集且访问者非创建者、协作者 - 不能访问
             if (project.role == 1) and (request.user != project.create_user) and (colla_user == 0):
                 return render(request, '404.html')
-
             # 指定用户可见文集
             elif project.role == 2:
                 user_list = project.role_value
@@ -552,8 +561,6 @@ def doc(request,pro_id,doc_id):
             try:
                 doc = Doc.objects.get(id=int(doc_id),status=1)
             except ObjectDoesNotExist:
-                if settings.DEBUG:
-                    print(traceback.print_exc())
                 return render(request, '404.html')
             # 获取文集下一级文档
             project_docs = Doc.objects.filter(top_doc=doc.top_doc, parent_doc=0, status=1).order_by('sort')
@@ -561,13 +568,14 @@ def doc(request,pro_id,doc_id):
         else:
             return HttpResponse('参数错误')
     except Exception as e:
-        if settings.DEBUG:
-            print(traceback.print_exc())
+        logger.exception("文集浏览出错")
         return render(request,'404.html')
 
 
 # 创建文档
 @login_required()
+@require_http_methods(['GET',"POST"])
+@logger.catch()
 def create_doc(request):
     if request.method == 'GET':
         try:
@@ -577,8 +585,7 @@ def create_doc(request):
             doctemp_list = DocTemp.objects.filter(create_user=request.user).values('id','name','create_time')
             return render(request,'app_doc/create_doc.html',locals())
         except Exception as e:
-            if settings.DEBUG:
-                print(traceback.print_exc())
+            logger.exception("访问创建文档页面出错")
             return render(request,'404.html')
     elif request.method == 'POST':
         try:
@@ -611,8 +618,7 @@ def create_doc(request):
             else:
                 return JsonResponse({'status':False,'data':'请确认文档标题、文集正确'})
         except Exception as e:
-            if settings.DEBUG:
-                print(traceback.print_exc())
+            logger.exception("创建文档出错")
             return JsonResponse({'status':False,'data':'请求出错'})
     else:
         return JsonResponse({'status':False,'data':'方法不允许'})
@@ -620,12 +626,15 @@ def create_doc(request):
 
 # 修改文档
 @login_required()
+@require_http_methods(['GET',"POST"])
 def modify_doc(request,doc_id):
     if request.method == 'GET':
         try:
             doc = Doc.objects.get(id=doc_id) # 查询文档信息
             project = Project.objects.get(id=doc.top_doc) # 查询文档所属的文集信息
             pro_colla = ProjectCollaborator.objects.filter(project=project,user=request.user) # 查询用户的协作文集信息
+            project_list = Project.objects.filter(create_user=request.user)  # 自己创建的文集列表
+            colla_project_list = ProjectCollaborator.objects.filter(user=request.user)  # 协作的文集列表
             if (request.user == doc.create_user) or (pro_colla[0].role == 1):
                 doc_list = Doc.objects.filter(top_doc=project.id)
                 doctemp_list = DocTemp.objects.filter(create_user=request.user)
@@ -634,8 +643,7 @@ def modify_doc(request,doc_id):
             else:
                 return render(request,'403.html')
         except Exception as e:
-            if settings.DEBUG:
-                print(traceback.print_exc())
+            logger.exception("修改文档页面访问出错")
             return render(request,'404.html')
     elif request.method == 'POST':
         try:
@@ -675,13 +683,13 @@ def modify_doc(request,doc_id):
             else:
                 return JsonResponse({'status': False,'data':'参数错误'})
         except Exception as e:
-            if settings.DEBUG:
-                print(traceback.print_exc())
+            logger.exception("修改文档出错")
             return JsonResponse({'status':False,'data':'请求出错'})
 
 
-# 删除文档
+# 删除文档 - 软删除 - 进入回收站
 @login_required()
+@require_http_methods(["POST"])
 def del_doc(request):
     try:
         # 获取文档ID
@@ -690,120 +698,260 @@ def del_doc(request):
             # 查询文档
             try:
                 doc = Doc.objects.get(id=doc_id)
+                project = Project.objects.get(id=doc.top_doc) # 查询文档所属的文集
+                # 获取文档所属文集的协作信息
+                pro_colla = ProjectCollaborator.objects.filter(project=project,user=request.user) #
+                if pro_colla.exists():
+                    colla_user_role = pro_colla[0].role
+                else:
+                    colla_user_role = 0
             except ObjectDoesNotExist:
                 return JsonResponse({'status': False, 'data': '文档不存在'})
-            if request.user == doc.create_user:
-                # 删除
-                doc.delete()
-                # 修改其子文档为顶级文档
-                Doc.objects.filter(parent_doc=doc_id).update(parent_doc=0)
+            # 如果请求用户为文档创建者、高级权限的协作者、文集的创建者，可以删除
+            if (request.user == doc.create_user) or (colla_user_role == 1) or (request.user == project.create_user):
+                # 修改状态为删除
+                doc.status = 3
+                doc.modify_time = datetime.datetime.now()
+                doc.save()
+                # 修改其下级所有文档状态为删除
+                chr_doc = Doc.objects.filter(parent_doc=doc_id) # 获取下级文档
+                chr_doc_ids = chr_doc.values_list('id',flat=True) # 提取下级文档的ID
+                chr_doc.update(status=3,modify_time=datetime.datetime.now()) # 修改下级文档的状态为删除
+                Doc.objects.filter(parent_doc__in=chr_doc_ids).update(status=3,modify_time=datetime.datetime.now()) # 修改下级文档的下级文档状态
+
                 return JsonResponse({'status': True, 'data': '删除完成'})
             else:
                 return JsonResponse({'status': False, 'data': '非法请求'})
         else:
             return JsonResponse({'status':False,'data':'参数错误'})
     except Exception as e:
-        if settings.DEBUG:
-            print(traceback.print_exc())
+        logger.exception("删除文档出错")
         return JsonResponse({'status':False,'data':'请求出错'})
 
 
 # 管理文档
 @login_required()
+@require_http_methods(['GET'])
+@logger.catch()
 def manage_doc(request):
-    if request.method == 'GET':
-        # 文档内容搜索参数
-        search_kw = request.GET.get('kw',None)
-        if search_kw:
-            # 已发布文档数量
-            published_doc_cnt = Doc.objects.filter(
-                create_user=request.user, status=1
-            ).count()
-            # 草稿文档数量
-            draft_doc_cnt = Doc.objects.filter(
-                create_user=request.user, status=0
-            ).count()
-            # 所有文档数量
-            all_cnt = published_doc_cnt + draft_doc_cnt
-            # 获取文档状态筛选参数
-            doc_status = request.GET.get('status', 'all')
+    # 文档内容搜索参数
+    search_kw = request.GET.get('kw','')
+    # 文档状态筛选参数
+    doc_status = request.GET.get('status', 'all')
+    # 文档文集筛选参数
+    doc_pro_id = request.GET.get('pid','')
 
-            # 查询文档
-            if doc_status == 'all':
-                doc_list = Doc.objects.filter(
-                    Q(content__icontains=search_kw) | Q(name__icontains=search_kw),  # 文本或文档标题包含搜索词
-                    create_user=request.user,
-                ).order_by('-modify_time')
-            elif doc_status == 'published':
-                doc_list = Doc.objects.filter(
-                    create_user=request.user,
-                    content__icontains=search_kw,
-                    status = 1
-                ).order_by('-modify_time')
-            elif doc_status == 'draft':
-                doc_list = Doc.objects.filter(
-                    Q(content__icontains=search_kw) | Q(name__icontains=search_kw), # 文本或文档标题包含搜索词
-                    create_user=request.user,
-                    status = 0
-                ).order_by('-modify_time')
-            # 分页处理
-            paginator = Paginator(doc_list, 15)
-            page = request.GET.get('page', 1)
-            try:
-                docs = paginator.page(page)
-            except PageNotAnInteger:
-                docs = paginator.page(1)
-            except EmptyPage:
-                docs = paginator.page(paginator.num_pages)
-            docs.kw = search_kw
-            docs.status = doc_status
+    is_search = True if search_kw != '' else False
+    is_status = doc_status
+    is_project = True if doc_pro_id != '' else False
+
+    # 无搜索 - 无状态 - 无文集
+    if (is_search is False) and (is_status == 'all') and (is_project is False):
+        doc_list = Doc.objects.filter(create_user=request.user,status__in=[0,1]).order_by('-modify_time')
+
+    # 无搜索 - 无状态 - 有文集
+    elif (is_search is False) and (is_status == 'all') and (is_project):
+        doc_list = Doc.objects.filter(
+            create_user=request.user,
+            top_doc=int(doc_pro_id),
+            status__in=[0,1]
+        ).order_by('-modify_time')
+
+    # 无搜索 - 有状态 - 无文集
+    elif (is_search is False) and (is_status != 'all') and (is_project is False):
+        # 返回已发布文档
+        if doc_status == 'published':
+            doc_list = Doc.objects.filter(create_user=request.user, status=1).order_by('-modify_time')
+        # 返回草稿文档
+        elif doc_status == 'draft':
+            doc_list = Doc.objects.filter(create_user=request.user, status=0).order_by('-modify_time')
         else:
-            # 已发布文档数量
-            published_doc_cnt = Doc.objects.filter(
-                create_user=request.user,status=1
-            ).count()
-            # 草稿文档数量
-            draft_doc_cnt = Doc.objects.filter(
-                create_user=request.user,status=0
-            ).count()
-            # 所有文档数量
-            all_cnt = published_doc_cnt + draft_doc_cnt
-            # 获取文档状态筛选参数
-            doc_status = request.GET.get('status','all')
-            if len(doc_status) == 0:
-                doc_status = 'all'
-            # print('status:', doc_status,type(doc_status))
-            # 返回所有文档
-            if doc_status == 'all':
-                doc_list = Doc.objects.filter(create_user=request.user).order_by('-modify_time')
-            # 返回已发布文档
-            elif doc_status == 'published':
-                doc_list = Doc.objects.filter(
-                    create_user=request.user,status=1
-                ).order_by('-modify_time')
-            # 返回草稿文档
-            elif doc_status == 'draft':
-                doc_list = Doc.objects.filter(
-                    create_user=request.user, status=0
-                ).order_by('-modify_time')
-            else:
-                doc_list = Doc.objects.filter(create_user=request.user).order_by('-modify_time')
-            # 分页处理
-            paginator = Paginator(doc_list, 15)
-            page = request.GET.get('page', 1)
-            try:
-                docs = paginator.page(page)
-            except PageNotAnInteger:
-                docs = paginator.page(1)
-            except EmptyPage:
-                docs = paginator.page(paginator.num_pages)
-            docs.status = doc_status
-        return render(request,'app_doc/manage_doc.html',locals())
+            doc_list = Doc.objects.filter(create_user=request.user, status__in=[0,1]).order_by('-modify_time')
+
+    # 无搜索 - 有状态 - 有文集
+    elif (is_search is False) and (is_status != 'all') and (is_project):
+        # 返回已发布文档
+        if doc_status == 'published':
+            doc_list = Doc.objects.filter(
+                create_user=request.user,
+                status=1,
+                top_doc=int(doc_pro_id)
+            ).order_by('-modify_time')
+        # 返回草稿文档
+        elif doc_status == 'draft':
+            doc_list = Doc.objects.filter(
+                create_user=request.user,
+                status=0,
+                top_doc = int(doc_pro_id)
+            ).order_by('-modify_time')
+        else:
+            doc_list = Doc.objects.filter(
+                create_user=request.user,
+                top_doc=int(doc_pro_id),
+                status__in=[0,1]
+            ).order_by('-modify_time')
+
+    # 有搜索 - 无状态 - 无文集
+    elif (is_search) and (is_status == 'all') and (is_project is False):
+        doc_list = Doc.objects.filter(
+            Q(content__icontains=search_kw) | Q(name__icontains=search_kw),  # 文本或文档标题包含搜索词
+            create_user=request.user,
+            status__in=[0,1]
+        ).order_by('-modify_time')
+
+    # 有搜索 - 无状态 - 有文集
+    elif (is_search) and (is_status == 'all') and (is_project):
+        doc_list = Doc.objects.filter(
+            Q(content__icontains=search_kw) | Q(name__icontains=search_kw),  # 文本或文档标题包含搜索词
+            create_user=request.user,top_doc=int(doc_pro_id),status__in=[0,1]
+        ).order_by('-modify_time')
+
+    # 有搜索 - 有状态 - 无文集
+    elif (is_search) and (is_status != 'all') and (is_project is False):
+        if doc_status == 'published':
+            doc_list = Doc.objects.filter(
+                Q(content__icontains=search_kw) | Q(name__icontains=search_kw),
+                create_user=request.user,
+                status = 1
+            ).order_by('-modify_time')
+        elif doc_status == 'draft':
+            doc_list = Doc.objects.filter(
+                Q(content__icontains=search_kw) | Q(name__icontains=search_kw), # 文本或文档标题包含搜索词
+                create_user=request.user,
+                status = 0
+            ).order_by('-modify_time')
+        else:
+            doc_list = Doc.objects.filter(
+                Q(content__icontains=search_kw) | Q(name__icontains=search_kw),  # 文本或文档标题包含搜索词
+                create_user=request.user,status__in=[0,1]
+            ).order_by('-modify_time')
+
+    # 有搜索 - 有状态 - 有文集
+    elif (is_search) and (is_status != 'all') and (is_project):
+        if doc_status == 'published':
+            doc_list = Doc.objects.filter(
+                Q(content__icontains=search_kw) | Q(name__icontains=search_kw),
+                create_user=request.user,
+                status = 1,
+                top_doc=int(doc_pro_id)
+            ).order_by('-modify_time')
+        elif doc_status == 'draft':
+            doc_list = Doc.objects.filter(
+                Q(content__icontains=search_kw) | Q(name__icontains=search_kw), # 文本或文档标题包含搜索词
+                create_user=request.user,
+                status = 0,
+                top_doc=int(doc_pro_id)
+            ).order_by('-modify_time')
+        else:
+            doc_list = Doc.objects.filter(
+                Q(content__icontains=search_kw) | Q(name__icontains=search_kw),  # 文本或文档标题包含搜索词
+                create_user=request.user,
+                top_doc=int(doc_pro_id),status__in=[0,1]
+            ).order_by('-modify_time')
+
+    # 文集列表
+    project_list = Project.objects.filter(create_user=request.user)  # 自己创建的文集列表
+    colla_project_list = ProjectCollaborator.objects.filter(user=request.user)  # 协作的文集列表
+
+    # 文档数量
+    # 已发布文档数量
+    published_doc_cnt = Doc.objects.filter(create_user=request.user, status=1).count()
+    # 草稿文档数量
+    draft_doc_cnt = Doc.objects.filter(create_user=request.user, status=0).count()
+    # 所有文档数量
+    all_cnt = published_doc_cnt + draft_doc_cnt
+
+
+    # 分页处理
+    paginator = Paginator(doc_list, 15)
+    page = request.GET.get('page', 1)
+    try:
+        docs = paginator.page(page)
+    except PageNotAnInteger:
+        docs = paginator.page(1)
+    except EmptyPage:
+        docs = paginator.page(paginator.num_pages)
+    docs.status = doc_status
+    docs.pid = doc_pro_id
+    docs.kw = search_kw
+    return render(request,'app_doc/manage_doc.html',locals())
+
+
+# 移动文档
+@login_required()
+@require_http_methods(['POST'])
+def move_doc(request):
+    doc_id = request.POST.get('doc_id','') # 文档ID
+    pro_id = request.POST.get('pro_id','') # 移动的文集ID
+    move_type = request.POST.get('move_type','') # 移动的类型 0复制 1移动 2连同下级文档移动
+    parent_id = request.POST.get('parent_id',0)
+    # 判断文集是否存在且有权限
+    try:
+        project = Project.objects.get(id=int(pro_id)) # 自己的文集
+        colla = ProjectCollaborator.objects.filter(project=project, user=request.user) # 协作文集
+        if (project.create_user is not request.user) and (colla.count()): # 请求者不是文集创建者和协作者返回错误
+            return JsonResponse({'status':False,'data':'文集无权限'})
+    except ObjectDoesNotExist:
+        return JsonResponse({'status':False,'data':'文集不存在'})
+    # 判断文档是否存在
+    try:
+        doc = Doc.objects.get(id=int(doc_id),create_user=request.user)
+    except ObjectDoesNotExist:
+        return JsonResponse({'status':False,'data':'文档不存在'})
+    # 判断上级文档是否存在
+    try:
+        if parent_id != '0':
+            parent = Doc.objects.get(id=int(parent_id),create_user=request.user)
+    except ObjectDoesNotExist:
+        return JsonResponse({'status':False,'data':'上级文档不存在'})
+    # 复制文档
+    if move_type == '0':
+        copy_doc = Doc.objects.create(
+            name = doc.name,
+            pre_content = doc.pre_content,
+            content = doc.content,
+            parent_doc = parent_id,
+            top_doc = int(pro_id),
+            create_user = request.user,
+            create_time = datetime.datetime.now(),
+            modify_time = datetime.datetime.now(),
+            # 文档状态说明：0表示草稿状态，1表示发布状态
+            status = doc.status
+        )
+        return JsonResponse({'status':True,'data':{'pro_id':pro_id,'doc_id':copy_doc.id}})
+    # 移动文档，下级文档更改到根目录
+    elif move_type == '1':
+        try:
+            # 修改文档的所属文集和上级文档实现移动文档
+            Doc.objects.filter(id=int(doc_id)).update(parent_doc=int(parent_id),top_doc=int(pro_id))
+            # 修改其子文档为顶级文档
+            Doc.objects.filter(parent_doc=doc_id).update(parent_doc=0)
+            return JsonResponse({'status':True,'data':{'pro_id':pro_id,'doc_id':doc_id}})
+        except:
+            logger.exception("移动文档异常")
+            return JsonResponse({'status':False,'data':'移动文档失败'})
+    # 包含下级文档一起移动
+    elif move_type == '2':
+        try:
+            # 修改文档的所属文集和上级文档实现移动文档
+            Doc.objects.filter(id=int(doc_id)).update(parent_doc=int(parent_id), top_doc=int(pro_id))
+            # 修改其子文档的文集归属
+            child_doc = Doc.objects.filter(parent_doc=doc_id)
+            child_doc.update(top_doc=int(pro_id))
+            # 遍历子文档，如果其存在下级文档，那么继续修改所属文集
+            for child in child_doc:
+                Doc.objects.filter(parent_doc=child.id).update(top_doc=int(pro_id))
+            return JsonResponse({'status': True, 'data':{'pro_id':pro_id,'doc_id':doc_id}})
+        except:
+            logger.exception("移动包含下级的文档异常")
+            return JsonResponse({'status': False, 'data': '移动文档失败'})
     else:
-        return HttpResponse('方法不允许')
+        return JsonResponse({'status':False,'data':'移动类型错误'})
+
 
 # 查看对比文档历史版本
 @login_required()
+@require_http_methods(['GET',"POST"])
 def diff_doc(request,doc_id,his_id):
     if request.method == 'GET':
         try:
@@ -820,8 +968,7 @@ def diff_doc(request,doc_id,his_id):
             else:
                 return render(request, '403.html')
         except Exception as e:
-            if settings.DEBUG:
-                print(traceback.print_exc())
+            logger.exception("文档历史版本页面访问出错")
             return render(request, '404.html')
 
     elif request.method == 'POST':
@@ -838,12 +985,13 @@ def diff_doc(request,doc_id,his_id):
             else:
                 return JsonResponse({'status':False,'data':'非法请求'})
         except Exception as e:
-            if settings.DEBUG:
-                print(traceback.print_exc())
+            logger.exception("文档历史版本获取出错")
             return JsonResponse({'status':False,'data':'获取异常'})
+
 
 # 管理文档历史版本
 @login_required()
+@require_http_methods(['GET',"POST"])
 def manage_doc_history(request,doc_id):
     if request.method == 'GET':
         try:
@@ -859,8 +1007,7 @@ def manage_doc_history(request,doc_id):
                 historys = paginator.page(paginator.num_pages)
             return render(request, 'app_doc/manage_doc_history.html', locals())
         except Exception as e:
-            if settings.DEBUG:
-                print(traceback.print_exc())
+            logger.exception("管理文档历史版本页面访问出错")
             return render(request, '404.html')
     elif request.method == 'POST':
         try:
@@ -868,13 +1015,112 @@ def manage_doc_history(request,doc_id):
             DocHistory.objects.filter(id=history_id,doc=doc_id,create_user=request.user).delete()
             return JsonResponse({'status':True,'data':'删除成功'})
         except:
-            if settings.DEBUG:
-                print(traceback.print_exc())
+            logger.exception("操作文档历史版本出错")
             return JsonResponse({'status':False,'data':'出现异常'})
 
 
+# 文档回收站
+@login_required()
+@require_http_methods(['GET','POST'])
+def doc_recycle(request):
+    if request.method == 'GET':
+        # 获取状态为删除的文档
+        doc_list = Doc.objects.filter(status=3,create_user=request.user).order_by('-modify_time')
+        # 分页处理
+        paginator = Paginator(doc_list, 15)
+        page = request.GET.get('page', 1)
+        try:
+            docs = paginator.page(page)
+        except PageNotAnInteger:
+            docs = paginator.page(1)
+        except EmptyPage:
+            docs = paginator.page(paginator.num_pages)
+        return render(request,'app_doc/manage_doc_recycle.html',locals())
+    elif request.method == 'POST':
+        try:
+            # 获取参数
+            doc_id = request.POST.get('doc_id', None) # 文档ID
+            types = request.POST.get('type',None) # 操作类型
+            if doc_id:
+                # 查询文档
+                try:
+                    doc = Doc.objects.get(id=doc_id)
+                    project = Project.objects.get(id=doc.top_doc)  # 查询文档所属的文集
+                    # 获取文档所属文集的协作信息
+                    pro_colla = ProjectCollaborator.objects.filter(project=project, user=request.user)  #
+                    if pro_colla.exists():
+                        colla_user_role = pro_colla[0].role
+                    else:
+                        colla_user_role = 0
+                except ObjectDoesNotExist:
+                    return JsonResponse({'status': False, 'data': '文档不存在'})
+                # 如果请求用户为文档创建者、高级权限的协作者、文集的创建者，可以操作
+                if (request.user == doc.create_user) or (colla_user_role == 1) or (request.user == project.create_user):
+                    # 还原文档
+                    if types == 'restore':
+                        # 修改状态为草稿
+                        doc.status = 0
+                        doc.modify_time = datetime.datetime.now()
+                        doc.save()
+                    # 删除文档
+                    elif types == 'del':
+                        # 删除文档
+                        doc.delete()
+                    else:
+                        return JsonResponse({'status':False,'data':'无效请求'})
+                    return JsonResponse({'status': True, 'data': '删除完成'})
+                else:
+                    return JsonResponse({'status': False, 'data': '非法请求'})
+            # 清空回收站
+            elif types == 'empty':
+                docs = Doc.objects.filter(status=3,create_user=request.user)
+                docs.delete()
+                return JsonResponse({'status': True, 'data': '清空成功'})
+            # 还原回收站
+            elif types == 'restoreAll':
+                Doc.objects.filter(status=3,create_user=request.user).update(status=0)
+                return JsonResponse({'status': True, 'data': '还原成功'})
+            else:
+                return JsonResponse({'status': False, 'data': '参数错误'})
+        except Exception as e:
+            logger.exception("处理文档出错")
+            return JsonResponse({'status': False, 'data': '请求出错'})
+
+
+# 一键发布文档
+@login_required()
+@require_http_methods(['POST'])
+def fast_publish_doc(request):
+    doc_id = request.POST.get('doc_id',None)
+    # 查询文档
+    try:
+        doc = Doc.objects.get(id=doc_id)
+        project = Project.objects.get(id=doc.top_doc)  # 查询文档所属的文集
+        # 获取文档所属文集的协作信息
+        pro_colla = ProjectCollaborator.objects.filter(project=project, user=request.user)  #
+        if pro_colla.exists():
+            colla_user_role = pro_colla[0].role
+        else:
+            colla_user_role = 0
+    except ObjectDoesNotExist:
+        return JsonResponse({'status': False, 'data': '文档不存在'})
+    # 判断请求者是否有权限（文档创建者、文集创建者、文集高级协作者）
+    # 如果请求用户为文档创建者、高级权限的协作者、文集的创建者，可以删除
+    if (request.user == doc.create_user) or (colla_user_role == 1) or (request.user == project.create_user):
+        try:
+            doc.status = 1
+            doc.modify_time = datetime.datetime.now()
+            doc.save()
+            return JsonResponse({'status':True,'data':'发布成功'})
+        except:
+            logger.exception("文档一键发布失败")
+            return JsonResponse({'status':False,'data':'发布失败'})
+    else:
+        return JsonResponse({'status':False,'data':'非法请求'})
+
 # 创建文档模板
 @login_required()
+@require_http_methods(['GET',"POST"])
 def create_doctemp(request):
     if request.method == 'GET':
         doctemps = DocTemp.objects.filter(create_user=request.user)
@@ -894,15 +1140,13 @@ def create_doctemp(request):
             else:
                 return JsonResponse({'status':False,'data':'模板标题不能为空'})
         except Exception as e:
-            if settings.DEBUG:
-                print(traceback.print_exc())
+            logger.exception("创建文档模板出错")
             return JsonResponse({'status':False,'data':'请求出错'})
-    else:
-        return JsonResponse({'status':False,'data':'方法不允许'})
 
 
 # 修改文档模板
 @login_required()
+@require_http_methods(['GET',"POST"])
 def modify_doctemp(request,doctemp_id):
     if request.method == 'GET':
         try:
@@ -913,8 +1157,7 @@ def modify_doctemp(request,doctemp_id):
             else:
                 return HttpResponse('非法请求')
         except Exception as e:
-            if settings.DEBUG:
-                print(traceback.print_exc())
+            logger.exception("访问文档模板修改页面出错")
             return render(request, '404.html')
     elif request.method == 'POST':
         try:
@@ -933,11 +1176,8 @@ def modify_doctemp(request,doctemp_id):
             else:
                 return JsonResponse({'status':False,'data':'参数错误'})
         except Exception as e:
-            if settings.DEBUG:
-                print(traceback.print_exc())
+            logger.exception("修改文档模板出错")
             return JsonResponse({'status':False,'data':'请求出错'})
-    else:
-        return HttpResponse('方法不允许')
 
 
 # 删除文档模板
@@ -955,105 +1195,102 @@ def del_doctemp(request):
         else:
             return JsonResponse({'status': False, 'data': '参数错误'})
     except Exception as e:
-        if settings.DEBUG:
-            print(traceback.print_exc())
+        logger.exception("删除文档模板出错")
         return JsonResponse({'status':False,'data':'请求出错'})
 
 
 # 管理文档模板
 @login_required()
+@require_http_methods(['GET'])
 def manage_doctemp(request):
-    if request.method == 'GET':
-        try:
-            search_kw = request.GET.get('kw', None)
-            if search_kw:
-                doctemp_list = DocTemp.objects.filter(create_user=request.user,content__icontains=search_kw)
-                paginator = Paginator(doctemp_list, 10)
-                page = request.GET.get('page', 1)
-                try:
-                    doctemps = paginator.page(page)
-                except PageNotAnInteger:
-                    doctemps = paginator.page(1)
-                except EmptyPage:
-                    doctemps = paginator.page(paginator.num_pages)
-                doctemps.kw = search_kw
-            else:
-                doctemp_list = DocTemp.objects.filter(create_user=request.user)
-                paginator = Paginator(doctemp_list, 10)
-                page = request.GET.get('page', 1)
-                try:
-                    doctemps = paginator.page(page)
-                except PageNotAnInteger:
-                    doctemps = paginator.page(1)
-                except EmptyPage:
-                    doctemps = paginator.page(paginator.num_pages)
-            return render(request, 'app_doc/manage_doctemp.html', locals())
-        except Exception as e:
-            if settings.DEBUG:
-                print(traceback.print_exc())
-            return render(request, '404.html')
-    else:
-        return HttpResponse('方法不允许')
+    try:
+        search_kw = request.GET.get('kw', None)
+        if search_kw:
+            doctemp_list = DocTemp.objects.filter(
+                create_user=request.user,
+                content__icontains=search_kw
+            ).order_by('-modify_time')
+            paginator = Paginator(doctemp_list, 10)
+            page = request.GET.get('page', 1)
+            try:
+                doctemps = paginator.page(page)
+            except PageNotAnInteger:
+                doctemps = paginator.page(1)
+            except EmptyPage:
+                doctemps = paginator.page(paginator.num_pages)
+            doctemps.kw = search_kw
+        else:
+            doctemp_list = DocTemp.objects.filter(create_user=request.user).order_by('-modify_time')
+            paginator = Paginator(doctemp_list, 10)
+            page = request.GET.get('page', 1)
+            try:
+                doctemps = paginator.page(page)
+            except PageNotAnInteger:
+                doctemps = paginator.page(1)
+            except EmptyPage:
+                doctemps = paginator.page(paginator.num_pages)
+        return render(request, 'app_doc/manage_doctemp.html', locals())
+    except Exception as e:
+        logger.exception("管理文档模板页面访问出错")
+        return render(request, '404.html')
 
 
 # 获取指定文档模板
 @login_required()
+@require_http_methods(["POST"])
 def get_doctemp(request):
-    if request.method == 'POST':
-        try:
-            doctemp_id = request.POST.get('doctemp_id','')
-            if doctemp_id != '':
-                content = DocTemp.objects.get(id=int(doctemp_id)).serializable_value('content')
-                return JsonResponse({'status':True,'data':content})
-            else:
-                return JsonResponse({'status':False,'data':'参数错误'})
-        except Exception as e:
-            if settings.DEBUG:
-                print(traceback.print_exc())
-            return JsonResponse({'status':False,'data':'请求出错'})
-    else:
-        return JsonResponse({'status':False,'data':'方法错误'})
+    try:
+        doctemp_id = request.POST.get('doctemp_id','')
+        if doctemp_id != '':
+            content = DocTemp.objects.get(id=int(doctemp_id)).serializable_value('content')
+            return JsonResponse({'status':True,'data':content})
+        else:
+            return JsonResponse({'status':False,'data':'参数错误'})
+    except Exception as e:
+        logger.exception("获取指定文档模板出错")
+        return JsonResponse({'status':False,'data':'请求出错'})
 
 
 # 获取指定文集的所有文档
+@require_http_methods(["POST"])
+@logger.catch()
 def get_pro_doc(request):
-    if request.method == 'POST':
-        pro_id = request.POST.get('pro_id','')
-        if pro_id != '':
-            # 获取文集所有文档的id、name和parent_doc3个字段
-            doc_list = Doc.objects.filter(top_doc=int(pro_id)).values_list('id','name','parent_doc').order_by('parent_doc')
-            item_list = []
-            # 遍历文档
-            for doc in doc_list:
-                # 如果文档为顶级文档
-                if doc[2] == 0:
-                    # 将其数据添加到列表中
+    pro_id = request.POST.get('pro_id','')
+    if pro_id != '':
+        # 获取文集所有文档的id、name和parent_doc3个字段
+        doc_list = Doc.objects.filter(top_doc=int(pro_id),status=1).values_list('id','name','parent_doc').order_by('parent_doc')
+        item_list = []
+        # 遍历文档
+        for doc in doc_list:
+            # 如果文档为顶级文档
+            if doc[2] == 0:
+                # 将其数据添加到列表中
+                item = [
+                    doc[0],doc[1],doc[2],''
+                ]
+                item_list.append(item)
+            # 如果文档不是顶级文档
+            else:
+                # 查询文档的上级文档
+                try:
+                    parent = Doc.objects.get(id=doc[2])
+                except ObjectDoesNotExist:
+                    return JsonResponse({'status':False,'data':'文档id不存在'})
+                # 如果文档上级文档的上级是顶级文档，那么将其添加到列表
+                if parent.parent_doc == 0: # 只要二级目录
                     item = [
-                        doc[0],doc[1],doc[2],''
+                        doc[0],doc[1],doc[2],parent.name+' --> '
                     ]
                     item_list.append(item)
-                # 如果文档不是顶级文档
-                else:
-                    # 查询文档的上级文档
-                    try:
-                        parent = Doc.objects.get(id=doc[2])
-                    except ObjectDoesNotExist:
-                        return JsonResponse({'status':False,'data':'文档id不存在'})
-                    # 如果文档上级文档的上级是顶级文档，那么将其添加到列表
-                    if parent.parent_doc == 0: # 只要二级目录
-                        item = [
-                            doc[0],doc[1],doc[2],parent.name+' --> '
-                        ]
-                        item_list.append(item)
-            return JsonResponse({'status':True,'data':list(item_list)})
-        else:
-            return JsonResponse({'status':False,'data':'参数错误'})
+        return JsonResponse({'status':True,'data':list(item_list)})
     else:
-        return JsonResponse({'status':False,'data':'方法错误'})
+        return JsonResponse({'status':False,'data':'参数错误'})
+
 
 # 获取指定文集的文档树数据
 @login_required()
 @require_http_methods(['POST'])
+@logger.catch()
 def get_pro_doc_tree(request):
     pro_id = request.POST.get('pro_id', None)
     if pro_id:
@@ -1106,76 +1343,267 @@ def get_pro_doc_tree(request):
 def handle_404(request):
     return render(request,'404.html')
 
-
 # 导出文集MD文件
 @login_required()
+@require_http_methods(["POST"])
 def report_md(request):
-    if request.method == 'POST':
-        pro_id = request.POST.get('project_id','')
-        user = request.user
-        try:
-            project = Project.objects.get(id=int(pro_id))
-            if project.create_user == user:
-                project_md = ReportMD(
-                    project_id=int(pro_id)
-                )
-                md_file_path = project_md.work() # 生成并获取MD文件压缩包绝对路径
-                md_file_filename = os.path.split(md_file_path)[-1] # 提取文件名
-                md_file = "/media/reportmd_temp/"+ md_file_filename # 拼接相对链接
-                return JsonResponse({'status':True,'data':md_file})
+    pro_id = request.POST.get('project_id','')
+    user = request.user
+    try:
+        project = Project.objects.get(id=int(pro_id))
+        if project.create_user == user:
+            project_md = ReportMD(
+                project_id=int(pro_id)
+            )
+            md_file_path = project_md.work() # 生成并获取MD文件压缩包绝对路径
+            md_file_filename = os.path.split(md_file_path)[-1] # 提取文件名
+            md_file = "/media/reportmd_temp/"+ md_file_filename # 拼接相对链接
+            return JsonResponse({'status':True,'data':md_file})
+        else:
+            return JsonResponse({'status':False,'data':'无权限'})
+    except Exception as e:
+        logger.exception("导出文集MD文件出错")
+        return JsonResponse({'status':False,'data':'文集不存在'})
+
+
+# 生成文集文件 - 个人中心 - 文集管理
+@login_required()
+@require_http_methods(["POST"])
+def genera_project_file(request):
+    report_type = request.POST.get('types',None) # 获取前端传入到导出文件类型参数
+    # 导出EPUB文件
+
+    pro_id = request.POST.get('pro_id')
+    try:
+        project = Project.objects.get(id=int(pro_id))
+        # 获取文集的协作用户信息
+        if request.user.is_authenticated:
+            colla_user = ProjectCollaborator.objects.filter(project=project, user=request.user)
+            if colla_user.exists():
+                colla_user_role = colla_user[0].role
+                colla_user = colla_user.count()
             else:
-                return JsonResponse({'status':False,'data':'无权限'})
-        except Exception as e:
-            if settings.DEBUG:
-                print(traceback.print_exc())
-            return JsonResponse({'status':False,'data':'文集不存在'})
+                colla_user = colla_user.count()
+        else:
+            colla_user = 0
 
-    else:
-        return Http404
+        # 公开的文集 - 可以直接导出
+        if project.role == 0:
+            allow_export = True
 
-# 导出文集文件
-@allow_report_file
-def report_file(request):
-    if request.method == 'POST':
-        report_type = request.POST.get('types',None)
-        if report_type in ['epub']:
-            pro_id = request.POST.get('pro_id')
-            try:
-                project = Project.objects.get(id=int(pro_id))
-                # 公开的文集 - 可以直接导出
-                if project.role == 0:
+        # 私密文集 - 非创建者和协作者不可导出
+        elif (project.role == 1):
+            if (request.user != project.create_user) and (colla_user == 0):
+                allow_export = False
+            else:
+                allow_export = True
+
+        # 指定用户可见文集 - 指定用户、文集创建者和协作者可导出
+        elif project.role == 2:
+            user_list = project.role_value
+            if request.user.is_authenticated:  # 认证用户判断是否在许可用户列表中
+                if (request.user.username not in user_list) and \
+                        (request.user != project.create_user) and \
+                        (colla_user == 0):  # 访问者不在指定用户之中，也不是协作者
+                    allow_export = False
+                else:
+                    allow_export = True
+            else:  # 游客直接返回404
+                allow_export = False
+
+        # 访问码可见文集 - 文集创建者、协作者和通过验证即可导出
+        elif project.role == 3:
+            # 浏览用户不为创建者和协作者 - 需要访问码
+            if (request.user != project.create_user) and (colla_user == 0):
+                viewcode = project.role_value
+                viewcode_name = 'viewcode-{}'.format(project.id)
+                r_viewcode = request.COOKIES[
+                    viewcode_name] if viewcode_name in request.COOKIES.keys() else 0  # 从cookie中获取访问码
+                if viewcode != r_viewcode:  # cookie中的访问码不等于文集访问码，不可导出
+                    allow_export = False
+                else:
+                    allow_export = True
+            else:
+                allow_export = True
+        else:
+            allow_export = False
+
+        # 允许被导出
+        if allow_export:
+            # 导出EPUB
+            if report_type in ['epub']:
+                try:
                     report_project = ReportEPUB(
                         project_id=project.id
                     ).work()
                     # print(report_project)
-                    report_file_path = report_project.split('media',maxsplit=1)[-1]
-                    epub_file = '/media' + report_file_path + '.epub'
-                    return JsonResponse({'status':True,'data':epub_file})
-                # 私密文集 - 拥有者可导出
-                elif project.role == 1:
-                    pass
-                # 指定用户可见文集 - 指定用户可导出
-                elif project.role == 2:
-                    pass
-                # 访问码可见文集 - 通过验证即可导出
-                elif project.role == 3:
-                    pass
-                else:
-                    return JsonResponse({'status':False,'data':'不存在的文集权限'})
-            except ObjectDoesNotExist:
-                return JsonResponse({'status':False,'data':'文集不存在'})
-            except Exception as e:
-                if settings.DEBUG:
-                    print(traceback.print_exc())
-                return JsonResponse({'status':False,'data':'系统异常'})
+                    report_file_path = report_project.split('media', maxsplit=1)[-1] # 导出文件的路径
+                    epub_file = '/media' + report_file_path + '.epub' # 文件相对路径
+                    # 查询文集是否存在导出文件
+                    report_cnt = ProjectReportFile.objects.filter(project=project,file_type='epub')
+                    # 存在文件删除
+                    if report_cnt.count() != 0:
+                        for r in report_cnt:
+                            is_exist = os.path.exists(settings.BASE_DIR + r.file_path)
+                            if is_exist:
+                                os.remove(settings.BASE_DIR + r.file_path)
+                        report_cnt.delete()  # 删除数据库记录
+
+                    # 创建数据库记录
+                    ProjectReportFile.objects.create(
+                        project=project,
+                        file_type='epub',
+                        file_name=epub_file,
+                        file_path=epub_file
+                    )
+
+                    return JsonResponse({'status': True, 'data': epub_file})
+                except Exception as e:
+                    return JsonResponse({'status': False, 'data': '生成出错'})
+            # 导出PDF
+            elif report_type in ['pdf']:
+                try:
+                    report_project = ReportPDF(
+                        project_id=project.id
+                    ).work()
+                    if report_project is False:
+                        return JsonResponse({'status':False,'data':'生成出错'})
+                    report_file_path = report_project.split('media', maxsplit=1)[-1]  # 导出文件的路径
+                    pdf_file = '/media' + report_file_path  # 文件相对路径
+                    # 查询文集是否存在导出文件
+                    report_cnt = ProjectReportFile.objects.filter(project=project, file_type='pdf')
+                    # 存在文件删除
+                    if report_cnt.count() != 0:
+                        for r in report_cnt:
+                            is_exist = os.path.exists(settings.BASE_DIR + r.file_path)
+                            if is_exist:
+                                os.remove(settings.BASE_DIR + r.file_path)
+                        report_cnt.delete()  # 删除数据库记录
+
+                    # 创建数据库记录
+                    ProjectReportFile.objects.create(
+                        project=project,
+                        file_type='pdf',
+                        file_name=pdf_file,
+                        file_path=pdf_file
+                    )
+
+                    return JsonResponse({'status': True, 'data': pdf_file})
+
+                except Exception as e:
+                    return JsonResponse({'status': False, 'data': '生成出错'})
+            else:
+                return JsonResponse({'status': False, 'data': '不支持的类型'})
+        # 不允许被导出
         else:
-            return JsonResponse({'status':False,'data':'不支持的类型'})
-    else:
-        return Http404
+            return JsonResponse({'status':False,'data':'无权限导出'})
+
+    except ObjectDoesNotExist:
+        return JsonResponse({'status':False,'data':'文集不存在'})
+
+    except Exception as e:
+        logger.exception("生成文集文件出错")
+        return JsonResponse({'status':False,'data':'系统异常'})
+
+
+# 获取文集前台导出文件
+@allow_report_file
+@require_http_methods(["POST"])
+def report_file(request):
+    report_type = request.POST.get('types',None) # 获取前端传入到导出文件类型参数
+
+    pro_id = request.POST.get('pro_id')
+    try:
+        project = Project.objects.get(id=int(pro_id))
+
+        # 获取文集的协作用户信息
+        if request.user.is_authenticated:
+            colla_user = ProjectCollaborator.objects.filter(project=project, user=request.user)
+            if colla_user.exists():
+                colla_user_role = colla_user[0].role
+                colla_user = colla_user.count()
+            else:
+                colla_user = colla_user.count()
+        else:
+            colla_user = 0
+
+        # 公开的文集 - 可以直接导出
+        if project.role == 0:
+            allow_export = True
+
+        # 私密文集 - 非创建者和协作者不可导出
+        elif (project.role == 1):
+            if (request.user != project.create_user) and (colla_user == 0):
+                allow_export = False
+            else:
+                allow_export = True
+
+        # 指定用户可见文集 - 指定用户、文集创建者和协作者可导出
+        elif project.role == 2:
+            user_list = project.role_value
+            if request.user.is_authenticated:  # 认证用户判断是否在许可用户列表中
+                if (request.user.username not in user_list) and \
+                        (request.user != project.create_user) and \
+                        (colla_user == 0):  # 访问者不在指定用户之中，也不是协作者
+                    allow_export = False
+                else:
+                    allow_export = True
+            else:  # 游客直接返回404
+                allow_export = False
+        # 访问码可见文集 - 文集创建者、协作者和通过验证即可导出
+        elif project.role == 3:
+            # 浏览用户不为创建者和协作者 - 需要访问码
+            if (request.user != project.create_user) and (colla_user == 0):
+                viewcode = project.role_value
+                viewcode_name = 'viewcode-{}'.format(project.id)
+                r_viewcode = request.COOKIES[
+                    viewcode_name] if viewcode_name in request.COOKIES.keys() else 0  # 从cookie中获取访问码
+                if viewcode != r_viewcode:  # cookie中的访问码不等于文集访问码，不可导出
+                    allow_export = False
+                else:
+                    allow_export = True
+            else:
+                allow_export = True
+        else:
+            allow_export = False
+            # return JsonResponse({'status':False,'data':'不存在的文集权限'})
+        if allow_export:
+            # 导出EPUB文件
+            if report_type in ['epub']:
+                try:
+                    try:
+                        report_project = ProjectReportFile.objects.get(project=project,file_type='epub')
+                    except ObjectDoesNotExist:
+                        return JsonResponse({'status':False,'data':'无可用文件,请联系文集创建者'})
+                    # print(report_project)
+                    return JsonResponse({'status': True, 'data': report_project.file_path})
+                except Exception as e:
+                    return JsonResponse({'status': False, 'data': '导出出错'})
+            # 导出PDF
+            elif report_type in ['pdf']:
+                try:
+                    try:
+                        report_project = ProjectReportFile.objects.get(project=project,file_type='pdf')
+                    except ObjectDoesNotExist:
+                        return JsonResponse({'status':False,'data':'无可用文件,请联系文集创建者'})
+                    # print(report_project)
+                    return JsonResponse({'status': True, 'data': report_project.file_path})
+                except Exception as e:
+                    return JsonResponse({'status': False, 'data': '导出出错'})
+            else:
+                return JsonResponse({'status': False, 'data': '不支持的类型'})
+        else:
+            return JsonResponse({'status':False,'data':'无权限导出'})
+    except ObjectDoesNotExist:
+        return JsonResponse({'status':False,'data':'文集不存在'})
+    except Exception as e:
+        logger.exception("获取文集前台导出文件出错")
+        return JsonResponse({'status':False,'data':'系统异常'})
 
 
 # 图片素材管理
 @login_required()
+@require_http_methods(['GET',"POST"])
 def manage_image(request):
     # 获取图片
     if request.method == 'GET':
@@ -1185,12 +1613,12 @@ def manage_image(request):
             no_group_cnt = Image.objects.filter(user=request.user,group_id=None).count() # 获取所有未分组的图片数量
             g_id = int(request.GET.get('group', 0))  # 图片分组id
             if int(g_id) == 0:
-                image_list = Image.objects.filter(user=request.user)  # 查询所有图片
+                image_list = Image.objects.filter(user=request.user).order_by('-create_time')  # 查询所有图片
             elif int(g_id) == -1:
-                image_list = Image.objects.filter(user=request.user,group_id=None)  # 查询指定分组的图片
+                image_list = Image.objects.filter(user=request.user,group_id=None).order_by('-create_time')  # 查询指定分组的图片
             else:
-                image_list = Image.objects.filter(user=request.user,group_id=g_id)  # 查询指定分组的图片
-            paginator = Paginator(image_list, 20)
+                image_list = Image.objects.filter(user=request.user,group_id=g_id).order_by('-create_time')  # 查询指定分组的图片
+            paginator = Paginator(image_list, 18)
             page = request.GET.get('page', 1)
             try:
                 images = paginator.page(page)
@@ -1201,8 +1629,7 @@ def manage_image(request):
             images.group = g_id
             return render(request,'app_doc/manage_image.html',locals())
         except:
-            if settings.DEBUG:
-                print(traceback.print_exc())
+            logger.exception("图片素材管理出错")
             return render(request,'404.html')
     elif request.method == 'POST':
         try:
@@ -1223,10 +1650,10 @@ def manage_image(request):
             elif int(types) == 1:
                 group_id = request.POST.get('group_id',None)
                 if group_id is None:
-                    Image.objects.filter(id=img_id).update(group_id=None)
+                    Image.objects.filter(id=img_id,user=request.user).update(group_id=None)
                 else:
                     group = ImageGroup.objects.get(id=group_id,user=request.user)
-                    Image.objects.filter(id=img_id).update(group_id=group)
+                    Image.objects.filter(id=img_id,user=request.user).update(group_id=group)
                 return JsonResponse({'status':True,'data':'移动完成'})
             # 获取图片
             elif int(types) == 2:
@@ -1234,11 +1661,11 @@ def manage_image(request):
                 if group_id is None: #
                     return JsonResponse({'status':False,'data':'参数错误'})
                 elif int(group_id) == 0:
-                    imgs = Image.objects.filter(user=request.user)
+                    imgs = Image.objects.filter(user=request.user).order_by('-create_time')
                 elif int(group_id) == -1:
-                    imgs = Image.objects.filter(user=request.user,group_id=None)
+                    imgs = Image.objects.filter(user=request.user,group_id=None).order_by('-create_time')
                 else:
-                    imgs = Image.objects.filter(user=request.user,group_id=group_id)
+                    imgs = Image.objects.filter(user=request.user,group_id=group_id).order_by('-create_time')
                 img_list = []
                 for img in imgs:
                     item = {
@@ -1252,12 +1679,13 @@ def manage_image(request):
         except ObjectDoesNotExist:
             return JsonResponse({'status':False,'data':'图片不存在'})
         except:
-            if settings.DEBUG:
-                print(traceback.print_exc())
+            logger.exception("操作图片素材出错")
             return JsonResponse({'status':False,'data':'程序异常'})
 
 # 图片分组管理
 @login_required()
+@require_http_methods(['GET',"POST"])
+@logger.catch()
 def manage_img_group(request):
     if request.method == 'GET':
         groups = ImageGroup.objects.filter(user=request.user)
@@ -1281,7 +1709,7 @@ def manage_img_group(request):
             group_name = request.POST.get("group_name",'')
             if group_name not in ['','默认分组','未分组']:
                 group_id = request.POST.get('group_id', '')
-                ImageGroup.objects.filter(id=group_id).update(group_name=group_name)
+                ImageGroup.objects.filter(id=group_id,user=request.user).update(group_name=group_name)
                 return JsonResponse({'status':True,'data':'修改成功'})
             else:
                 return JsonResponse({'status':False,'data':'名称无效'})
@@ -1291,19 +1719,18 @@ def manage_img_group(request):
             try:
                 group_id = request.POST.get('group_id','')
                 group = ImageGroup.objects.get(id=group_id,user=request.user) # 查询分组
-                images = Image.objects.filter(group_id=group_id).update(group_id=None) # 移动图片到未分组
+                images = Image.objects.filter(group_id=group_id,user=request.user).update(group_id=None) # 移动图片到未分组
                 group.delete() # 删除分组
                 return JsonResponse({'status':True,'data':'删除完成'})
             except:
-                if settings.DEBUG:
-                    print(traceback.print_exc())
+                logger.exception("删除图片分组出错")
                 return JsonResponse({'status':False,'data':'删除错误'})
         # 获取分组
         elif int(types) == 3:
             try:
                 group_list = []
-                all_cnt = Image.objects.all().count()
-                non_group_cnt = Image.objects.filter(group_id=None).count()
+                all_cnt = Image.objects.filter(user=request.user).count()
+                non_group_cnt = Image.objects.filter(group_id=None,user=request.user).count()
                 group_list.append({'group_name':'全部图片','group_cnt':all_cnt,'group_id':0})
                 group_list.append({'group_name':'未分组','group_cnt':non_group_cnt,'group_id':-1})
                 groups = ImageGroup.objects.filter(user=request.user) # 查询所有分组
@@ -1317,13 +1744,13 @@ def manage_img_group(request):
                     group_list.append(item)
                 return JsonResponse({'status':True,'data':group_list})
             except:
-                if settings.DEBUG:
-                    print(traceback.print_exc())
+                logger.exception("获取图片分组出错")
                 return JsonResponse({'status':False,'data':'出现错误'})
 
 
 # 附件管理
 @login_required()
+@require_http_methods(['GET',"POST"])
 def manage_attachment(request):
     # 文件大小 字节转换
     def sizeFormat(size, is_disk=False, precision=2):
@@ -1355,7 +1782,10 @@ def manage_attachment(request):
         try:
             search_kw = request.GET.get('kw', None)
             if search_kw:
-                attachment_list = Attachment.objects.filter(user=request.user,file_name__icontains=search_kw)
+                attachment_list = Attachment.objects.filter(
+                    user=request.user,
+                    file_name__icontains=search_kw
+                ).order_by('-create_time')
                 paginator = Paginator(attachment_list, 15)
                 page = request.GET.get('page', 1)
                 try:
@@ -1366,7 +1796,7 @@ def manage_attachment(request):
                     attachments = paginator.page(paginator.num_pages)
                 attachments.kw = search_kw
             else:
-                attachment_list = Attachment.objects.filter(user=request.user)
+                attachment_list = Attachment.objects.filter(user=request.user).order_by('-create_time')
                 paginator = Paginator(attachment_list, 15)
                 page = request.GET.get('page', 1)
                 try:
@@ -1377,8 +1807,7 @@ def manage_attachment(request):
                     attachments = paginator.page(paginator.num_pages)
             return render(request, 'app_doc/manage_attachment.html', locals())
         except Exception as e:
-            if settings.DEBUG:
-                print(traceback.print_exc())
+            logger.exception("附件管理访问出错")
             return render(request,'404.html')
     elif request.method == 'POST':
         # types参数，0表示上传、1表示删除、2表示获取附件列表

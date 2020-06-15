@@ -78,7 +78,9 @@
 <script src="{% static 'viewerjs/viewer.js' %}"></script>
 <script>
     var form = layui.form;
-
+    var flow = layui.flow;
+    // 懒加载图片
+    flow.lazyimg({elem:'img.image-list-i'}); 
     //悬浮显示图片按钮
     $(".image-list").mouseover(function(){
         $(this).find(".opera-img-btn").show();
@@ -168,7 +170,7 @@
         //zoomable:false,//缩放
         button:false,//关闭按钮
       };
-    const viewer = new Viewer(document.getElementById('images'), options);
+    var viewer = new Viewer(document.getElementById('images'), options);
     //创建图片分组
     createImgGroup = function(){
         layer.open({

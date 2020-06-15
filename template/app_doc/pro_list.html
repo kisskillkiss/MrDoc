@@ -7,10 +7,10 @@
     <meta http-equiv="Cache-Control" content="no-transform" />
     <meta http-equiv="Cache-Control" content="no-siteapp" />
     <meta http-equiv="Cache-Control" content="max-age=7200" />
-    <meta name="keywords" content="mrdoc,markdown,文档写作,在线教程,Python文档系统,django应用"/>
-    <meta name="description" content="MrDoc是由州的先生（zmister.com）开发，基于Python的Django框架的在线文档写作系统，适合作为个人和小型团队的文档、笔记和知识管理工具。" />
+    <meta name="keywords" content="觅道文档,mrdoc,markdown,文档写作,在线教程,Python文档系统,django应用"/>
+    <meta name="description" content="MrDoc觅道文档是一个开源的在线文档系统，由州的先生（zmister.com）基于 Python 的 Django 进行开发框架，适合作为个人和小型团队的文档、笔记和知识管理工具。" />
     <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1">
-    <title>MrDoc - 一个简单的文档写作系统</title>
+    <title>MrDoc觅道文档 - 一个简单的开源在线文档系统</title>
     <link href="{% static 'layui/css/layui.css' %}" rel="stylesheet">
     <link href="{% static 'mrdoc.css' %}?version={{mrdoc_version}}" rel="stylesheet">
     <link rel="icon" href="{% static 'favicon_16.png' %}"/>
@@ -146,7 +146,7 @@
                     </div>
                   <div class="layui-card-body">
                       <p class="layui-word-aux layui-elip">作者：{{p.create_user}}</p>
-                      <p class="layui-word-aux">最新：{{p.id | get_new_doc}}</p>
+                      <p class="layui-word-aux layui-elip">最新：{{p.id | get_new_doc}}</p>
                       <p class="tooltip layui-word-aux">简介：
                           {% if p.intro == "" %}
                           <span class="">此文集没有填写简介</span>

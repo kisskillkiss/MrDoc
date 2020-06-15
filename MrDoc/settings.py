@@ -1,3 +1,4 @@
+# coding:utf-8
 """
 Django settings for MrDoc project.
 
@@ -11,10 +12,24 @@ https://docs.djangoproject.com/en/2.1/ref/settings/
 """
 
 import os
+from configparser import ConfigParser
+from loguru import logger
 
 # Build paths inside the project like this: os.path.join(BASE_DIR, ...)
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
+# 配置文件和数据文件目录
+CONFIG_DIR = os.path.join(BASE_DIR, 'config')
+CONFIG = ConfigParser()
+CONFIG.read(os.path.join(CONFIG_DIR,'config.ini'),encoding='utf-8')
+
+# 日志文件配置
+LOG_DIR = os.path.join(BASE_DIR,'log')
+
+if os.path.exists(LOG_DIR) is False:
+    os.makedirs(LOG_DIR)
+
+logger.add(os.path.join(LOG_DIR,'error.log'),rotation='1 days',retention='30 days',encoding='utf-8')
 
 # Quick-start development settings - unsuitable for production
 # See https://docs.djangoproject.com/en/2.1/howto/deployment/checklist/
@@ -23,12 +38,11 @@ BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 SECRET_KEY = '5&71mt9@^58zdg*_!t(x6g14q*@84d%ptr%%s6e0l50zs0we3d'
 
 # SECURITY WARNING: don't run with debug turned on in production!
-DEBUG = False
+DEBUG = CONFIG.getboolean('site','debug')
 
-VERSIONS = '0.4.2'
+VERSIONS = '0.5.3'
 
 ALLOWED_HOSTS = ['*']
-
 
 # Application definition
 
@@ -43,6 +57,7 @@ INSTALLED_APPS = [
     'app_doc',
     'app_api',
     'django.contrib.sitemaps',
+    'rest_framework',
 ]
 
 MIDDLEWARE = [
@@ -53,6 +68,7 @@ MIDDLEWARE = [
     'django.contrib.auth.middleware.AuthenticationMiddleware',
     'django.contrib.messages.middleware.MessageMiddleware',
     'django.middleware.clickjacking.XFrameOptionsMiddleware',
+    'app_admin.middleware.require_login_middleware.RequiredLoginMiddleware',
 ]
 
 ROOT_URLCONF = 'MrDoc.urls'
@@ -61,8 +77,8 @@ TEMPLATES = [
     {
         'BACKEND': 'django.template.backends.django.DjangoTemplates',
         'DIRS': [
-			os.path.join(BASE_DIR,'template')
-		],
+            os.path.join(BASE_DIR,'template')
+        ],
         'APP_DIRS': True,
         'OPTIONS': {
             'context_processors': [
@@ -72,6 +88,10 @@ TEMPLATES = [
                 'django.contrib.messages.context_processors.messages',
                 'app_admin.context_processors.sys_setting', # 自定义系统设置上下文渲染
             ],
+            'libraries': { # 自定义的模板标签
+                'doc_filter' : 'app_doc.templatetags.doc_filter',
+                'project_filter' : 'app_doc.templatetags.project_filter',
+            },
         },
     },
 ]
@@ -80,17 +100,37 @@ WSGI_APPLICATION = 'MrDoc.wsgi.application'
 
 
 # Database
-# https://docs.djangoproject.com/en/2.1/ref/settings/#databases
+# 数据库配置
+# https://docs.djangoproject.com/en/2.2/ref/settings/#databases
 
-DATABASES = {
-    'default': {
-        'ENGINE': 'django.db.backends.sqlite3',
-        'NAME': os.path.join(BASE_DIR, 'db.sqlite3'),
-        'OPTIONS':{
-            'timeout':20,
+DATABASE_MAP = {
+    'sqlite':'django.db.backends.sqlite3',
+    'mysql':'django.db.backends.mysql',
+    'postgresql':'django.db.backends.postgresql_psycopg2',
+    'oracle':'django.db.backends.oracle',
+}
+
+if CONFIG['database']['engine'] == 'sqlite':
+    DATABASES = {
+        'default': {
+            'ENGINE': DATABASE_MAP[CONFIG['database']['engine']],
+            'NAME': os.path.join(CONFIG_DIR, 'db.sqlite3'),
+            'OPTIONS':{
+                'timeout':20,
+            }
         }
     }
-}
+else:
+    DATABASES = {
+        'default': {
+            'ENGINE': DATABASE_MAP[CONFIG['database']['engine']],
+            'NAME': CONFIG['database']['name'],
+            'USER': CONFIG['database']['user'],
+            'PASSWORD': CONFIG['database']['password'],
+            'HOST': CONFIG['database']['host'],
+            'PORT': CONFIG['database']['port'],
+        }
+    }
 
 
 # Password validation
@@ -140,3 +180,21 @@ MEDIA_URL = '/media/'
 MEDIA_ROOT = os.path.join(BASE_DIR,'media')
 
 
+REST_FRAMEWORK = {
+    'DEFAULT_PAGINATION_CLASS': 'rest_framework.pagination.PageNumberPagination',
+    'PAGE_SIZE': 10
+}
+
+# Chromium路径
+try:
+    CHROMIUM_DIR = CONFIG['chromium']['path']
+    CHROMIUM_PATH = CHROMIUM_DIR
+    # CHROMIUM_PATH = os.path.join(CONFIG_DIR,CHROMIUM_DIR) # Windows便携版本使用config下的路径
+except:
+    CHROMIUM_PATH = None
+
+# Chromium启动参数
+try:
+    CHROMIUM_ARGS = CONFIG['chromium']['args'].split(',')
+except:
+    CHROMIUM_ARGS = []

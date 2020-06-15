@@ -9,7 +9,7 @@ register = template.Library()
 # 获取文集下的文档数量
 @register.filter(name='get_doc_count')
 def get_doc_count(value):
-    return Doc.objects.filter(top_doc=int(value)).count()
+    return Doc.objects.filter(top_doc=int(value),status__in=[0,1]).count()
 
 # 获取文集下最新的文档及其修改时间
 @register.filter(name='get_new_doc')
@@ -19,12 +19,23 @@ def get_new_doc(value):
         new_doc = '它还没有文档……'
     return new_doc
 
-# 获取文集的开放导出状态
-@register.filter(name='get_report_status')
-def get_report_status(value):
+# 获取文集的EPUB开放导出状态
+@register.filter(name='report_status_epub')
+def get_report_status_epub(value):
     try:
         project = Project.objects.get(id=int(value))
         status = ProjectReport.objects.get(project=project).allow_epub
+    except Exception as e:
+        # print(repr(e))
+        status = 0
+    return status
+
+# 获取文集的PDF开放导出状态
+@register.filter(name='report_status_pdf')
+def get_report_status_pdf(value):
+    try:
+        project = Project.objects.get(id=int(value))
+        status = ProjectReport.objects.get(project=project).allow_pdf
     except Exception as e:
         # print(repr(e))
         status = 0
